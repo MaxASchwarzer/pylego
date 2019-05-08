@@ -89,13 +89,14 @@ class ResBlock(nn.Module):
             self.upsample = Identity()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
         if norm is not None:
-            self.bn1 = norm(planes, affine=True)
+            # If spectral norm is in use, disable affine to preserve the lipschitz behavior of the module
+            self.bn1 = norm(planes, affine=not spectral_norm)
         else:
             self.bn1 = Identity()
         self.nonlinearity = nonlinearity
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, padding=1, bias=False)
         if norm is not None:
-            self.bn2 = norm(planes, affine=True)
+            self.bn2 = norm(planes, affine=not spectral_norm)
         else:
             self.bn2 = Identity()
         self.rescale = rescale
@@ -169,7 +170,8 @@ class ResNet(nn.Module):
     def _make_layer(self, block, planes, blocks, stride=1, final=False, layer_index=1, spectral_norm=False):
         rescale = None
         if self.norm is not None:
-            batch_norm2d = self.norm(planes * block.expansion, affine=True)
+            # disable affine if SN in use to preserve lipschitz for the module
+            batch_norm2d = self.norm(planes * block.expansion, affine=not spectral_norm)
         else:
             batch_norm2d = Identity()
         if stride != 1 or self.inplanes != planes * block.expansion:
