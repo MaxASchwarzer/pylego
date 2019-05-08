@@ -78,7 +78,7 @@ class ResBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, rescale=None, norm=None, nonlinearity=F.elu, final=False,
-                 skip_last_norm=False, layer_index=1, eps=0.0):
+                 skip_last_norm=False, layer_index=1, eps=0.0, spectral_norm=False):
         super().__init__()
         self.final = final
         self.skip_last_norm = skip_last_norm
@@ -110,6 +110,14 @@ class ResBlock(nn.Module):
         else:
             self.conv2.weight.data.zero_()
 
+        if spectral_norm:
+            self.conv1 = nn.utils.spectral_norm(self.conv1)
+            self.conv2 = nn.utils.spectral_norm(self.conv2)
+            # Generally the only reason to use SN is to enforce Lipschitz, which a trainable gain breaks (unless
+            # a gradient penalty is also used, which is usually not the case for computational reasons).
+            # Thus, for compatibility with the rest of the code, gain is silently disabled.
+            self.gain = 1
+
     def forward(self, x):
         out = self.upsample(x + self.biases[0])
         out = self.conv1(out) + self.biases[1]
@@ -133,7 +141,7 @@ class ResBlock(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(self, inplanes, layers, block=None, norm=None, nonlinearity=F.elu, skip_last_norm=False,
-                 previous_blocks=0, eps=0.0):
+                 previous_blocks=0, eps=0.0, spectral_norm=False):
         '''layers is a list of tuples (layer_size, input_planes, stride). Negative stride for upscaling.'''
         super().__init__()
         self.norm = norm
@@ -149,7 +157,7 @@ class ResNet(nn.Module):
         for i, (layer_size, inplanes, stride) in enumerate(layers):
             final = (i == len(layers) - 1)
             all_layers.append(self._make_layer(block, inplanes, layer_size, stride=stride, final=final,
-                                               layer_index=layer_index))
+                                               layer_index=layer_index, spectral_norm=spectral_norm))
             layer_index += layer_size
         self.layers = nn.Sequential(*all_layers)
 
@@ -158,7 +166,7 @@ class ResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1, final=False, layer_index=1):
+    def _make_layer(self, block, planes, blocks, stride=1, final=False, layer_index=1, spectral_norm=False):
         rescale = None
         if self.norm is not None:
             batch_norm2d = self.norm(planes * block.expansion, affine=True)
@@ -167,15 +175,21 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             if stride < 0:
                 stride_ = -stride
+                layer = nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, bias=False)
+                if spectral_norm:
+                    layer = nn.utils.spectral_norm(layer)
                 rescale = nn.Sequential(
                     Upsample(stride_),
-                    nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, bias=False),
+                    layer,
                     batch_norm2d,
                 )
                 conv = 1
             else:
+                layer = nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False)
+                if spectral_norm:
+                    layer = nn.utils.spectral_norm(layer)
                 rescale = nn.Sequential(
-                    nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                    layer,
                     batch_norm2d,
                 )
                 conv = 0
